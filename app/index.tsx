@@ -1,11 +1,30 @@
+import { decode } from "base64-arraybuffer";
 import { Camera } from "expo-camera";
+import * as FileSystem from "expo-file-system/legacy";
 import * as ImagePicker from "expo-image-picker";
 import * as MediaLibrary from "expo-media-library";
 import { useState } from "react";
 import { Button, Image, StyleSheet, Text, View } from "react-native";
+import { supabase } from "../utils/supabase";
 
 export default function Index() {
   const [image, setImage] = useState<string | null>(null);
+  const [location, setLocation] = useState<any>(null);
+
+  const getLastLocation = async () => {
+    const { data } = await supabase
+      .from("location")
+      .select("*")
+      .order("created_at", { ascending: false })
+      .limit(1);
+
+    if (data && data.length > 0) {
+      setLocation({
+        latitude: data[0].latitude,
+        longitude: data[0].longitude,
+      });
+    }
+  };
 
   const openCamera = async () => {
     const permission = await Camera.requestCameraPermissionsAsync();
@@ -16,12 +35,13 @@ export default function Index() {
     }
 
     const result = await ImagePicker.launchCameraAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       quality: 1,
     });
 
     if (!result.canceled) {
       setImage(result.assets[0].uri);
+      await getLastLocation();
     }
   };
 
@@ -34,12 +54,13 @@ export default function Index() {
     }
 
     const result = await ImagePicker.launchImageLibraryAsync({
-      mediaTypes: ImagePicker.MediaTypeOptions.Images,
+      mediaTypes: ["images"],
       quality: 1,
     });
 
     if (!result.canceled) {
       setImage(result.assets[0].uri);
+      await getLastLocation();
     }
   };
 
@@ -50,21 +71,55 @@ export default function Index() {
     }
 
     try {
-      const perm = await MediaLibrary.requestPermissionsAsync(true);
+      const permission = await MediaLibrary.requestPermissionsAsync(true);
 
-      console.log("PERMISSION:", perm);
-
-      if (perm.status !== "granted") {
-        alert("Permission NOT granted!");
+      if (!permission.granted) {
+        alert("Media library permission is required!");
         return;
       }
 
       await MediaLibrary.saveToLibraryAsync(image);
 
-      alert("Image saved to gallery!");
-    } catch (error) {
-      console.log("ERROR:", error);
-      alert("Failed to save image");
+      const fileName = `photo_${Date.now()}.jpg`;
+
+      const base64 = await FileSystem.readAsStringAsync(image, {
+        encoding: "base64",
+      });
+
+      const arrayBuffer = decode(base64);
+
+      const { error: uploadError } = await supabase.storage
+        .from("images")
+        .upload(fileName, arrayBuffer, {
+          contentType: "image/jpeg",
+        });
+
+      if (uploadError) {
+        console.log(uploadError);
+        alert(uploadError.message);
+        return;
+      }
+
+      const { data } = supabase.storage.from("images").getPublicUrl(fileName);
+
+      const { error: insertError } = await supabase.from("photo").insert([
+        {
+          image_url: data.publicUrl,
+          latitude: location?.latitude,
+          longitude: location?.longitude,
+        },
+      ]);
+
+      if (insertError) {
+        console.log(insertError);
+        alert(insertError.message);
+        return;
+      }
+
+      alert("Image saved successfully!");
+    } catch (error: any) {
+      console.log(error);
+      alert(error.message);
     }
   };
 
@@ -85,6 +140,13 @@ export default function Index() {
       </View>
 
       {image && <Image source={{ uri: image }} style={styles.image} />}
+
+      {location && (
+        <>
+          <Text>Latitude: {location.latitude}</Text>
+          <Text>Longitude: {location.longitude}</Text>
+        </>
+      )}
     </View>
   );
 }
